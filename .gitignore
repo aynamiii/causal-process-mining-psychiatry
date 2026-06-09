@@ -1,0 +1,16 @@
+# Patient data — never commit
+data/
+
+# Generated outputs
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+.venv/
+
+.idea/
+
