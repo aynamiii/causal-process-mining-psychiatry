@@ -2,55 +2,50 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from causalml.inference.tree import UpliftTreeClassifier
-from config import UPLIFT_MAX_DEPTH, UPLIFT_MIN_LEAF
+from config import UPLIFT_MAX_DEPTH, UPLIFT_MIN_LEAF_PCT
+
+CONFOUNDER_COLS = ['age_at_admission', 'length_of_stay']
 
 
-def prepare_confounder_matrix(cases_df: pd.DataFrame) -> tuple[np.ndarray, list]:
-
+def prepare_confounder_matrix(cases_df: pd.DataFrame) -> np.ndarray:
     df = cases_df.copy()
-    le_gender = LabelEncoder().fit(df['gender'].fillna('U').unique())
-    le_visittype = LabelEncoder().fit(df['visit_type'].fillna('other').unique())
-    df['gender_enc'] = le_gender.transform(df['gender'].fillna('U'))
-    df['visit_type_enc'] = le_visittype.transform(df['visit_type'].fillna('other'))
+    for col in CONFOUNDER_COLS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    le = LabelEncoder().fit(df['gender'].fillna('U').astype(str).unique())
+    df['gender_enc'] = le.transform(df['gender'].fillna('U').astype(str))
+    cols = ['gender_enc'] + [c for c in CONFOUNDER_COLS if c in df.columns]
+    X = df[cols].fillna(df[cols].median()).values
+    return X
 
-    feature_names = ['age', 'gender_enc', 'visit_type_enc', 'cci_score', 'los_days']
-    X = df[feature_names].fillna(df[feature_names].median()).values
-    return X, feature_names
 
-
-def fit_uplift(
-    cases_df: pd.DataFrame,
-    top_treatments: list,
-) -> pd.DataFrame:
-
-    X, _ = prepare_confounder_matrix(cases_df)
-    y = (1 - cases_df['readmitted'].values)
+def fit_uplift(cases_df: pd.DataFrame, treatments: list) -> pd.DataFrame:
+    X = prepare_confounder_matrix(cases_df)
+    y = (1 - cases_df['readmitted'].astype(int).values)
+    min_leaf = max(10, int(len(cases_df) * UPLIFT_MIN_LEAF_PCT))
 
     results = []
-    for col in top_treatments:
-        t_vec = cases_df[col].values
+    for col in treatments:
+        t_vec = pd.to_numeric(cases_df[col], errors='coerce').fillna(0).astype(int).values
         n_t = int(t_vec.sum())
-        n_c = int((t_vec == 0).sum())
-
-        if n_t < 10 or n_c < 10:
+        if n_t < 10 or int((t_vec == 0).sum()) < 10:
             continue
 
         m = UpliftTreeClassifier(
-            control_name = 'control',
-            max_depth = UPLIFT_MAX_DEPTH,
-            min_samples_leaf = UPLIFT_MIN_LEAF,
-            evaluationFunction = 'KL',
-            honesty = False,
+            control_name='control',
+            max_depth=UPLIFT_MAX_DEPTH,
+            min_samples_leaf=min_leaf,
+            evaluationFunction='KL',
+            honesty=False,
         )
         m.fit(X, treatment=np.where(t_vec == 1, 'treatment', 'control'), y=y)
-        s = m.predict(X)
-        ate = float(np.mean(s[:, 0] - s[:, 1]))
-
+        ite = m.predict(X)[:, 0] - m.predict(X)[:, 1]
         results.append({
             'treatment': col,
             'n_treated': n_t,
-            'n_control': n_c,
-            'ATE': round(ate, 4),
+            'max_ite': round(float(np.max(ite)), 4),
         })
 
-    return pd.DataFrame(results).sort_values('ATE', ascending=False)
+    if not results:
+        return pd.DataFrame(columns=['treatment', 'n_treated', 'max_ite'])
+    return pd.DataFrame(results).sort_values('max_ite', ascending=False).reset_index(drop=True)
