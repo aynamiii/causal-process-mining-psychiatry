@@ -7,7 +7,7 @@ from config import UPLIFT_MAX_DEPTH, UPLIFT_MIN_LEAF_PCT
 CONFOUNDER_COLS = ['age_at_admission', 'length_of_stay']
 
 
-def prepare_confounder_matrix(cases_df: pd.DataFrame) -> np.ndarray:
+def _prepare_confounder_matrix(cases_df: pd.DataFrame, condition_cols: list | None = None) -> np.ndarray:
     df = cases_df.copy()
     for col in CONFOUNDER_COLS:
         if col in df.columns:
@@ -15,12 +15,17 @@ def prepare_confounder_matrix(cases_df: pd.DataFrame) -> np.ndarray:
     le = LabelEncoder().fit(df['gender'].fillna('U').astype(str).unique())
     df['gender_enc'] = le.transform(df['gender'].fillna('U').astype(str))
     cols = ['gender_enc'] + [c for c in CONFOUNDER_COLS if c in df.columns]
+    if condition_cols:
+        for c in condition_cols:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+        cols += [c for c in condition_cols if c in df.columns]
     X = df[cols].fillna(df[cols].median()).values
     return X
 
 
-def fit_uplift(cases_df: pd.DataFrame, treatments: list) -> pd.DataFrame:
-    X = prepare_confounder_matrix(cases_df)
+def fit_uplift(cases_df: pd.DataFrame, treatments: list, condition_cols: list | None = None) -> pd.DataFrame:
+    X = _prepare_confounder_matrix(cases_df, condition_cols)
     y = (1 - cases_df['readmitted'].astype(int).values)
     min_leaf = max(10, int(len(cases_df) * UPLIFT_MIN_LEAF_PCT))
 
@@ -39,7 +44,8 @@ def fit_uplift(cases_df: pd.DataFrame, treatments: list) -> pd.DataFrame:
             honesty=False,
         )
         m.fit(X, treatment=np.where(t_vec == 1, 'treatment', 'control'), y=y)
-        ite = m.predict(X)[:, 0] - m.predict(X)[:, 1]
+        preds = m.predict(X)
+        ite = preds[:, 0]
         results.append({
             'treatment': col,
             'n_treated': n_t,

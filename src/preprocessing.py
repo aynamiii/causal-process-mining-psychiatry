@@ -1,9 +1,8 @@
 import os
 import re
 import pandas as pd
-from config import ACTIVITY_MIN_FREQUENCY
+from config import ACTIVITY_MIN_FREQUENCY, TOP_N_DRUGS, TOP_N_PROCEDURES
 
-FLEXIBLE_EVENT_TYPES = {'DRUG', 'PROCEDURE'}
 STABLE_EVENT_TYPES = {'CONDITION'}
 
 
@@ -12,13 +11,16 @@ def _sanitize(name: str) -> str:
     return name.strip('_')[:60]
 
 
-def _onehot_activities(event_log, event_types, prefix, case_col, min_count):
+def _onehot_activities(event_log, event_types, prefix, case_col, min_count, top_n=None):
     subset = event_log[event_log['event_type'].str.upper().isin(event_types)]
     if subset.empty:
         return pd.DataFrame()
     pivot = subset.groupby([case_col, 'activity']).size().unstack(fill_value=0).clip(upper=1)
-    freq = pivot.sum()
-    pivot = pivot[freq[freq >= min_count].index]
+    freq = pivot.sum().sort_values(ascending=False)
+    if top_n is not None:
+        pivot = pivot[freq[freq >= min_count].head(top_n).index]
+    else:
+        pivot = pivot[freq[freq >= min_count].index]
     pivot.columns = [f'{prefix}__{_sanitize(c)}' for c in pivot.columns]
     pivot.columns.name = None
     return pivot.astype(int)
@@ -31,7 +33,8 @@ def prepare_data(data_dir: str, min_frequency: float = ACTIVITY_MIN_FREQUENCY) -
     case_col = 'index_visit_occurrence_id'
     min_count = max(1, int(event_log[case_col].nunique() * min_frequency))
 
-    flex_df = _onehot_activities(event_log, FLEXIBLE_EVENT_TYPES, 'act', case_col, min_count)
+    drug_df = _onehot_activities(event_log, {'DRUG'}, 'drug', case_col, min_count, top_n=TOP_N_DRUGS)
+    proc_df = _onehot_activities(event_log, {'PROCEDURE'}, 'proc', case_col, min_count, top_n=TOP_N_PROCEDURES)
     stable_act_df = _onehot_activities(event_log, STABLE_EVENT_TYPES, 'cond', case_col, min_count)
 
     case_attrs = (
@@ -44,26 +47,26 @@ def prepare_data(data_dir: str, min_frequency: float = ACTIVITY_MIN_FREQUENCY) -
         pd.to_numeric(case_attrs['age_at_admission'], errors='coerce'),
         bins=[0, 40, 55, 65, 75, 150],
         labels=['age_lt40', 'age_40_54', 'age_55_64', 'age_65_74', 'age_gte75'],
-    ).astype(str)
+    ).cat.add_categories('unknown').fillna('unknown').astype(str)
 
     case_attrs['los_category'] = pd.cut(
         pd.to_numeric(case_attrs['length_of_stay'], errors='coerce').clip(lower=0),
         bins=[-1, 0, 3, 7, 9999],
         labels=['same_day', 'short', 'medium', 'long'],
-    ).astype(str)
+    ).cat.add_categories('unknown').fillna('unknown').astype(str)
 
     df = case_attrs.copy()
-    for ohe_df in [flex_df, stable_act_df]:
+    for ohe_df in [drug_df, proc_df, stable_act_df]:
         if not ohe_df.empty:
             ohe_df.index = ohe_df.index.astype(df.index.dtype)
             df = df.join(ohe_df, how='left')
 
-    act_cols = list(flex_df.columns) + list(stable_act_df.columns)
+    act_cols = list(drug_df.columns) + list(proc_df.columns) + list(stable_act_df.columns)
     df[act_cols] = df[act_cols].fillna(0).astype(int)
     df = df.reset_index(drop=True)
 
     stable_cols = ['age_group', 'gender', 'los_category'] + list(stable_act_df.columns)
-    flexible_cols = list(flex_df.columns)
+    flexible_cols = list(drug_df.columns) + list(proc_df.columns)
 
     for c in stable_cols + flexible_cols:
         if c in df.columns:

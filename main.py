@@ -2,7 +2,7 @@ import os
 
 import config
 from src.preprocessing import prepare_data
-from src.action_rules import prepare_ar_dataframe, run_action_rules, extract_treatments
+from src.lift_rules import prepare_ar_dataframe, run_lift_rules as run_action_rules, extract_treatments
 from src.uplift import fit_uplift
 from src.causal_rules import assemble_causal_rules
 
@@ -16,7 +16,7 @@ def main():
     print('2. Action rule mining')
     ar_df = prepare_ar_dataframe(cases_df, stable_cols, flexible_cols)
     pretty_rules, json_export = run_action_rules(ar_df, stable_cols, flexible_cols)
-    with open(os.path.join(config.OUTPUT_DIR, 'action_rules.txt'), 'w') as f:
+    with open(os.path.join(config.OUTPUT_DIR, 'action_rules.txt'), 'w', encoding='utf-8') as f:
         f.write('\n'.join(pretty_rules))
     print(f'   Rules found: {len(pretty_rules)}')
 
@@ -25,7 +25,8 @@ def main():
     print(f'   Treatments: {len(treatments)}')
 
     print('4. Uplift modelling')
-    uplift_summary = fit_uplift(cases_df, treatments)
+    condition_cols = [c for c in stable_cols if c.startswith('cond__')]
+    uplift_summary = fit_uplift(cases_df, treatments, condition_cols)
 
     print('5. Assembling causal rules')
     causal_rules_df = assemble_causal_rules(json_export, uplift_summary, flexible_cols)

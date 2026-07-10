@@ -19,7 +19,7 @@ _LOS_LABELS = {
 }
 
 def _clean(name: str) -> str:
-    for prefix in ('act__', 'cond__'):
+    for prefix in ('act__', 'cond__', 'drug__', 'proc__'):
         if name.startswith(prefix):
             name = name[len(prefix):]
     return name.replace('_', ' ').title()
@@ -80,6 +80,8 @@ def assemble_causal_rules(
         )
 
         stable_items = _fmt_stable(stable)
+        if stable_items and all(str(v) == '0' for _, v in stable_items):
+            continue
         for attr, change in treatments:
             frm, to = change.split('→')
             rows.append({
@@ -88,6 +90,7 @@ def assemble_causal_rules(
                 'precondition': _subpopulation_phrase(stable_items),
                 'n_stable': len(stable_items),
                 'action': _action_phrase(attr, frm, to),
+                '_stable_items': stable_items,
             })
 
     if not rows:
@@ -99,10 +102,13 @@ def assemble_causal_rules(
     )
     causal_df = causal_df[causal_df['max_ite'] > min_max_ite]
 
+    causal_df['positive_precondition'] = causal_df['_stable_items'].apply(
+        lambda items: _subpopulation_phrase([(a, v) for a, v in items if str(v) != '0'])
+    )
     causal_df = (
         causal_df.sort_values(['max_ite', 'n_stable'], ascending=[False, True])
-        .drop_duplicates(subset=['treatment'])
-        .drop(columns=['n_stable'])
+        .drop_duplicates(subset=['treatment', 'positive_precondition'])
+        .drop(columns=['n_stable', 'positive_precondition', '_stable_items'])
         .reset_index(drop=True)
     )
 
@@ -114,4 +120,4 @@ def assemble_causal_rules(
         )
         for i, row in causal_df.iterrows()
     ]
-    return causal_df
+    return causal_df.drop(columns=['action'])
