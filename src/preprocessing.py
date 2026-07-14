@@ -1,6 +1,8 @@
+from __future__ import annotations
 import os
 import re
 import pandas as pd
+from airms_connect.connection import airms_connection
 from config import ACTIVITY_MIN_FREQUENCY, TOP_N_DRUGS, TOP_N_PROCEDURES
 
 STABLE_EVENT_TYPES = {'CONDITION'}
@@ -26,9 +28,53 @@ def _onehot_activities(event_log, event_types, prefix, case_col, min_count, top_
     return pivot.astype(int)
 
 
-def prepare_data(data_dir: str, min_frequency: float = ACTIVITY_MIN_FREQUENCY) -> tuple[pd.DataFrame, list, list]:
-    event_log = pd.read_csv(os.path.join(data_dir, 'event_log_sample.csv'), parse_dates=['event_datetime'], low_memory=False)
+_EVENT_LOG_SQL = """
+SELECT
+    e.PERSON_ID,
+    e.INDEX_VISIT_OCCURRENCE_ID,
+    e.ACTIVITY,
+    e.EVENT_DATETIME,
+    e.EVENT_TYPE,
+    YEAR(c.admission_date) - p.YEAR_OF_BIRTH        AS age_at_admission,
+    p.GENDER_CONCEPT_NAME                            AS gender,
+    DAYS_BETWEEN(c.admission_date, c.discharge_date) AS length_of_stay,
+    COALESCE(rf.readmitted, 0)                       AS readmitted
+FROM soleiz01.RCA_log e
+INNER JOIN soleiz01.depression_inpatient_cohort c
+    ON c.index_visit_occurrence_id = e.INDEX_VISIT_OCCURRENCE_ID
+INNER JOIN CDMPHI.PERSON p
+    ON p.PERSON_ID = e.PERSON_ID
+LEFT JOIN soleiz01.readmission_flag rf
+    ON rf.index_visit_occurrence_id = e.INDEX_VISIT_OCCURRENCE_ID
+WHERE e.INDEX_VISIT_OCCURRENCE_ID IN (SELECT case_id FROM soleiz01.case_sample)
+ORDER BY e.INDEX_VISIT_OCCURRENCE_ID, e.EVENT_DATETIME
+"""
+
+
+def _fetch_event_log(data_dir: str) -> pd.DataFrame:
+    cache_path = os.path.join(data_dir, 'event_log_sample.csv')
+    if os.path.exists(cache_path):
+        print(f"  Loading cached event log from {cache_path}")
+        return pd.read_csv(cache_path, parse_dates=['event_datetime'], low_memory=False)
+
+    print("  Connecting to AIRMS/CDMPHI...")
+    airms = airms_connection()
+    airms.on_minerva(login_host_name="li04e01")
+    airms.connect()
+
+    event_log = airms.conn.sql(_EVENT_LOG_SQL).collect()
     event_log.columns = event_log.columns.str.lower()
+
+    os.makedirs(data_dir, exist_ok=True)
+    event_log.to_csv(cache_path, index=False)
+    print(f"  Saved event log to {cache_path}")
+    return event_log
+
+
+def prepare_data(data_dir: str, min_frequency: float = ACTIVITY_MIN_FREQUENCY) -> tuple[pd.DataFrame, list, list]:
+    event_log = _fetch_event_log(data_dir)
+    event_log.columns = event_log.columns.str.lower()
+    event_log['event_datetime'] = pd.to_datetime(event_log['event_datetime'], errors='coerce')
 
     case_col = 'index_visit_occurrence_id'
     min_count = max(1, int(event_log[case_col].nunique() * min_frequency))
