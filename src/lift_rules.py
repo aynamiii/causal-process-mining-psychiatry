@@ -24,7 +24,10 @@ def run_lift_rules(
     min_support = max(1, int(n_total * AR_MIN_SUPPORT_PCT))
     target = 'readmitted_str'
 
-    flex_cols_present = [c for c in flexible_cols if c in ar_df.columns]
+    flex_cols_present = [
+        c for c in flexible_cols
+        if c in ar_df.columns and 'no_matching_concept' not in c
+    ]
 
     rules = []
     pretty = []
@@ -65,29 +68,32 @@ def run_lift_rules(
                 'attribute': col,
                 'from': '0',
                 'to': '1',
-                'undesired_support': u_support,
-                'desired_support': d_support,
+                'candidates': u_support,
+                'evidence': d_support,
                 'confidence': round(confidence, 4),
             })
 
         if len(flex_hits) < AR_MIN_FLEXIBLE:
             continue
 
+        _GENDER = {'8507': 'Male', '8532': 'Female'}
+        stable_str = ', '.join(
+            f'{k}={_GENDER.get(str(v), v) if "gender" in k else v}'
+            for k, v in stable_dict.items()
+        )
         for hit in flex_hits:
             rule = {
                 'stable': [{'attribute': k, 'value': v} for k, v in stable_dict.items()],
                 'flexible': [hit],
-                'undesired_support': hit['undesired_support'],
-                'desired_support': hit['desired_support'],
+                'candidates': hit['candidates'],
+                'evidence': hit['evidence'],
                 'confidence': hit['confidence'],
             }
             rules.append(rule)
-
-            stable_str = ', '.join(f'{k}={v}' for k, v in stable_dict.items())
             col_name = hit['attribute']
             pretty.append(
                 f"[{stable_str}] ({col_name}: 0→1) "
-                f"[sup: {hit['undesired_support']}/{hit['desired_support']}, "
+                f"[candidates: {hit['candidates']}, evidence: {hit['evidence']}, "
                 f"conf: {hit['confidence']:.2f}]"
             )
 

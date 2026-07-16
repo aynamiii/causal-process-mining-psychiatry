@@ -42,7 +42,8 @@ def fit_uplift(cases_df: pd.DataFrame, treatments: list, condition_cols: list | 
             max_depth=UPLIFT_MAX_DEPTH,
             min_samples_leaf=min_leaf,
             evaluationFunction='KL',
-            honesty=False,
+            honesty=True,
+            estimation_sample_size=0.5,
         )
         m.fit(X, treatment=np.where(t_vec == 1, 'treatment', 'control'), y=y)
         preds = m.predict(X)

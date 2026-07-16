@@ -2,7 +2,10 @@ from __future__ import annotations
 import os
 import re
 import pandas as pd
-from airms_connect.connection import airms_connection
+try:
+    from airms_connect.connection import airms_connection
+except ImportError:
+    airms_connection = None
 from config import ACTIVITY_MIN_FREQUENCY, TOP_N_DRUGS, TOP_N_PROCEDURES
 
 STABLE_EVENT_TYPES = {'CONDITION'}
@@ -57,6 +60,10 @@ def _fetch_event_log(data_dir: str) -> pd.DataFrame:
         print(f"  Loading cached event log from {cache_path}")
         return pd.read_csv(cache_path, parse_dates=['event_datetime'], low_memory=False)
 
+    if airms_connection is None:
+        raise RuntimeError(
+            f"No cached event log found at {cache_path} and airms_connect is not installed."
+        )
     print("  Connecting to AIRMS/CDMPHI...")
     airms = airms_connection()
     airms.on_minerva(login_host_name="li04e01")

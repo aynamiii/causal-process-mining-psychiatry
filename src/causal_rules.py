@@ -18,6 +18,11 @@ _LOS_LABELS = {
     'long':     'over 7 days',
 }
 
+_GENDER_LABELS = {
+    '8507': 'Male',
+    '8532': 'Female',
+}
+
 def _clean(name: str) -> str:
     for prefix in ('act__', 'cond__', 'drug__', 'proc__'):
         if name.startswith(prefix):
@@ -30,6 +35,8 @@ def _clean_value(attr: str, val: str) -> str:
         return _AGE_LABELS.get(val, val)
     if 'los_category' in attr:
         return _LOS_LABELS.get(val, val)
+    if 'gender' in attr:
+        return _GENDER_LABELS.get(str(val), val)
     return val
 
 
@@ -71,34 +78,43 @@ def assemble_causal_rules(
         flex = rule.get('flexible', rule.get('flexible_attributes', {}))
         stable = rule.get('stable', rule.get('stable_attributes', {}))
 
-        treatments = (
-            [(a, f"{v[0]}→{v[1]}" if isinstance(v, list) else f"{v.get('from','0')}→{v.get('to','1')}")
-             for a, v in flex.items() if a in flex_set]
-            if isinstance(flex, dict) else
-            [(i.get('attribute', ''), f"{i.get('from','0')}→{i.get('to','1')}")
-             for i in flex if i.get('attribute', '') in flex_set]
-        )
-
         stable_items = _fmt_stable(stable)
         if stable_items and all(str(v) == '0' for _, v in stable_items):
             continue
-        for attr, change in treatments:
-            frm, to = change.split('→')
+        if isinstance(flex, dict):
+            # dict format: {attr: [from, to]} or {attr: {'from':..,'to':..}}
+            flex_items = [
+                {'attribute': a,
+                 'from': str(v[0]) if isinstance(v, list) else str(v.get('from', '0')),
+                 'to':   str(v[1]) if isinstance(v, list) else str(v.get('to', '1')),
+                 'candidates': 0}
+                for a, v in flex.items()
+            ]
+        else:
+            flex_items = flex
+        for item in flex_items:
+            attr       = item.get('attribute', '')
+            frm        = item.get('from', '0')
+            to         = item.get('to', '1')
+            candidates = item.get('candidates', item.get('undesired_support', 0))
+            if attr not in flex_set:
+                continue
             rows.append({
                 'treatment': attr,
-                'change': change,
+                'change': f'{frm}→{to}',
                 'precondition': _subpopulation_phrase(stable_items),
                 'n_stable': len(stable_items),
                 'action': _action_phrase(attr, frm, to),
                 '_stable_items': stable_items,
+                'n_candidates': candidates,
             })
 
     if not rows:
-        return pd.DataFrame(columns=['treatment', 'precondition', 'change', 'max_ite', 'n_treated', 'rule'])
+        return pd.DataFrame(columns=['treatment', 'precondition', 'change', 'max_ite', 'n_candidates', 'rule'])
 
     causal_df = (
         pd.DataFrame(rows)
-        .merge(uplift_summary[['treatment', 'max_ite', 'n_treated']], on='treatment', how='inner')
+        .merge(uplift_summary[['treatment', 'max_ite']], on='treatment', how='inner')
     )
     causal_df = causal_df[causal_df['max_ite'] > min_max_ite]
 
@@ -116,7 +132,7 @@ def assemble_causal_rules(
         (
             f"Action {i + 1}: {row['action']}. "
             f"Sub-population: {row['precondition']}. "
-            f"[support: {row['n_treated']}, max_ite: {row['max_ite']:+.4f}]"
+            f"[candidates: {row['n_candidates']}, max_ite: {row['max_ite']:+.4f}]"
         )
         for i, row in causal_df.iterrows()
     ]

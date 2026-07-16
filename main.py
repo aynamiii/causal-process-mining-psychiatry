@@ -22,11 +22,12 @@ def main():
 
     print('3. Extracting treatments')
     treatments = extract_treatments(json_export, flexible_cols) or flexible_cols
-    print(f'   Treatments: {len(treatments)}')
+    drug_treatments = [t for t in treatments if t.startswith('drug__')]
+    print(f'   Treatments: {len(treatments)} total, {len(drug_treatments)} drugs')
 
     print('4. Uplift modelling')
     condition_cols = [c for c in stable_cols if c.startswith('cond__')]
-    uplift_summary = fit_uplift(cases_df, treatments, condition_cols)
+    uplift_summary = fit_uplift(cases_df, drug_treatments, condition_cols)
 
     print('5. Assembling causal rules')
     causal_rules_df = assemble_causal_rules(json_export, uplift_summary, flexible_cols)
@@ -34,7 +35,7 @@ def main():
     for _, row in causal_rules_df.iterrows():
         print(' •', row['rule'])
 
-    causal_rules_df[['treatment', 'precondition', 'change', 'max_ite', 'n_treated', 'rule']].to_csv(
+    causal_rules_df[['treatment', 'precondition', 'change', 'max_ite', 'n_candidates', 'rule']].to_csv(
         os.path.join(config.OUTPUT_DIR, 'causal_rules.csv'), index=False
     )
     print(f'\nDone. Output saved to {config.OUTPUT_DIR}/causal_rules.csv')
