@@ -118,13 +118,10 @@ def assemble_causal_rules(
     )
     causal_df = causal_df[causal_df['max_ite'] > min_max_ite]
 
-    causal_df['positive_precondition'] = causal_df['_stable_items'].apply(
-        lambda items: _subpopulation_phrase([(a, v) for a, v in items if str(v) != '0'])
-    )
     causal_df = (
         causal_df.sort_values(['max_ite', 'n_stable'], ascending=[False, True])
-        .drop_duplicates(subset=['treatment', 'positive_precondition'])
-        .drop(columns=['n_stable', 'positive_precondition', '_stable_items'])
+        .drop_duplicates(subset=['treatment', 'precondition'])
+        .drop(columns=['n_stable', '_stable_items'])
         .reset_index(drop=True)
     )
 

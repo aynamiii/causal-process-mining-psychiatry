@@ -6,7 +6,7 @@ try:
     from airms_connect.connection import airms_connection
 except ImportError:
     airms_connection = None
-from config import ACTIVITY_MIN_FREQUENCY, TOP_N_DRUGS, TOP_N_PROCEDURES
+from config import ACTIVITY_MIN_FREQUENCY, TOP_N_DRUGS
 
 STABLE_EVENT_TYPES = {'CONDITION'}
 
@@ -78,7 +78,7 @@ def _fetch_event_log(data_dir: str) -> pd.DataFrame:
     return event_log
 
 
-def prepare_data(data_dir: str, min_frequency: float = ACTIVITY_MIN_FREQUENCY) -> tuple[pd.DataFrame, list, list]:
+def prepare_data(data_dir: str, min_frequency: float = ACTIVITY_MIN_FREQUENCY) -> tuple[pd.DataFrame, list, list, pd.DataFrame]:
     event_log = _fetch_event_log(data_dir)
     event_log.columns = event_log.columns.str.lower()
     event_log['event_datetime'] = pd.to_datetime(event_log['event_datetime'], errors='coerce')
@@ -87,8 +87,12 @@ def prepare_data(data_dir: str, min_frequency: float = ACTIVITY_MIN_FREQUENCY) -
     min_count = max(1, int(event_log[case_col].nunique() * min_frequency))
 
     drug_df = _onehot_activities(event_log, {'DRUG'}, 'drug', case_col, min_count, top_n=TOP_N_DRUGS)
-    proc_df = _onehot_activities(event_log, {'PROCEDURE'}, 'proc', case_col, min_count, top_n=TOP_N_PROCEDURES)
     stable_act_df = _onehot_activities(event_log, STABLE_EVENT_TYPES, 'cond', case_col, min_count)
+
+    # drop data-quality artifact columns before they reach the rule miner
+    stable_act_df = stable_act_df[
+        [c for c in stable_act_df.columns if 'no_matching_concept' not in c]
+    ]
 
     case_attrs = (
         event_log.drop_duplicates(subset=[case_col])
@@ -109,20 +113,20 @@ def prepare_data(data_dir: str, min_frequency: float = ACTIVITY_MIN_FREQUENCY) -
     ).cat.add_categories('unknown').fillna('unknown').astype(str)
 
     df = case_attrs.copy()
-    for ohe_df in [drug_df, proc_df, stable_act_df]:
+    for ohe_df in [drug_df, stable_act_df]:
         if not ohe_df.empty:
             ohe_df.index = ohe_df.index.astype(df.index.dtype)
             df = df.join(ohe_df, how='left')
 
-    act_cols = list(drug_df.columns) + list(proc_df.columns) + list(stable_act_df.columns)
+    act_cols = list(drug_df.columns) + list(stable_act_df.columns)
     df[act_cols] = df[act_cols].fillna(0).astype(int)
     df = df.reset_index(drop=True)
 
     stable_cols = ['age_group', 'gender', 'los_category'] + list(stable_act_df.columns)
-    flexible_cols = list(drug_df.columns) + list(proc_df.columns)
+    flexible_cols = list(drug_df.columns)
 
     for c in stable_cols + flexible_cols:
         if c in df.columns:
             df[c] = df[c].astype(str)
 
-    return df, stable_cols, flexible_cols
+    return df, stable_cols, flexible_cols, event_log

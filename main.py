@@ -3,7 +3,8 @@ import os
 import config
 from src.preprocessing import prepare_data
 from src.lift_rules import prepare_ar_dataframe, run_lift_rules as run_action_rules, extract_treatments
-from src.uplift import fit_uplift
+from src.uplift import fit_uplift, describe_tree
+from src.eda import save_eda
 from src.causal_rules import assemble_causal_rules
 
 os.makedirs(config.OUTPUT_DIR, exist_ok=True)
@@ -11,7 +12,10 @@ os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
 def main():
     print('1. Preparing data')
-    cases_df, stable_cols, flexible_cols = prepare_data(config.DATA_DIR)
+    cases_df, stable_cols, flexible_cols, event_log = prepare_data(config.DATA_DIR)
+
+    print('   EDA summary')
+    save_eda(event_log, config.OUTPUT_DIR)
 
     print('2. Action rule mining')
     ar_df = prepare_ar_dataframe(cases_df, stable_cols, flexible_cols)
@@ -22,12 +26,11 @@ def main():
 
     print('3. Extracting treatments')
     treatments = extract_treatments(json_export, flexible_cols) or flexible_cols
-    drug_treatments = [t for t in treatments if t.startswith('drug__')]
-    print(f'   Treatments: {len(treatments)} total, {len(drug_treatments)} drugs')
+    print(f'   Treatments: {len(treatments)} drugs')
 
     print('4. Uplift modelling')
     condition_cols = [c for c in stable_cols if c.startswith('cond__')]
-    uplift_summary = fit_uplift(cases_df, drug_treatments, condition_cols)
+    uplift_summary, fitted_models = fit_uplift(cases_df, treatments, condition_cols)
 
     print('5. Assembling causal rules')
     causal_rules_df = assemble_causal_rules(json_export, uplift_summary, flexible_cols)
@@ -38,7 +41,23 @@ def main():
     causal_rules_df[['treatment', 'precondition', 'change', 'max_ite', 'n_candidates', 'rule']].to_csv(
         os.path.join(config.OUTPUT_DIR, 'causal_rules.csv'), index=False
     )
-    print(f'\nDone. Output saved to {config.OUTPUT_DIR}/causal_rules.csv')
+
+    print('6. Saving tree breakdowns for discovered rules')
+    discovered_treatments = set(causal_rules_df['treatment'].unique())
+    tree_rows = []
+    for treatment, (model, feature_names) in fitted_models.items():
+        if treatment not in discovered_treatments:
+            continue
+        for node in describe_tree(model, feature_names):
+            tree_rows.append({'treatment': treatment, **node})
+
+    if tree_rows:
+        import pandas as pd
+        tree_df = pd.DataFrame(tree_rows)
+        tree_df.to_csv(os.path.join(config.OUTPUT_DIR, 'tree_breakdowns.csv'), index=False)
+        print(f'   Saved {len(tree_rows)} nodes for {len(discovered_treatments)} treatment(s)')
+
+    print(f'\nDone. Outputs saved to {config.OUTPUT_DIR}/')
 
 
 if __name__ == '__main__':
