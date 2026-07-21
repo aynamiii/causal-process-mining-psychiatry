@@ -1,4 +1,5 @@
 import json
+import numpy as np
 import pandas as pd
 from config import UPLIFT_MIN_MAX_ITE
 
@@ -64,10 +65,25 @@ def _subpopulation_phrase(stable_items: list[tuple]) -> str:
     return 'patients with ' + ', '.join(parts)
 
 
+def _subgroup_mean_ite(
+    cases_df: pd.DataFrame,
+    stable_items: list[tuple],
+    ite_array: np.ndarray,
+) -> float:
+    """Return mean ITE for patients matching all stable conditions."""
+    mask = np.ones(len(cases_df), dtype=bool)
+    for attr, val in stable_items:
+        if attr in cases_df.columns:
+            mask &= cases_df[attr].astype(str).values == str(val)
+    return float(ite_array[mask].mean()) if mask.any() else 0.0
+
+
 def assemble_causal_rules(
     json_export: object,
     uplift_summary: pd.DataFrame,
     flexible_cols: list,
+    cases_df: pd.DataFrame,
+    ite_arrays: dict,
     min_max_ite: float = UPLIFT_MIN_MAX_ITE,
 ) -> pd.DataFrame:
     flex_set = set(flexible_cols)
@@ -82,7 +98,6 @@ def assemble_causal_rules(
         if stable_items and all(str(v) == '0' for _, v in stable_items):
             continue
         if isinstance(flex, dict):
-            # dict format: {attr: [from, to]} or {attr: {'from':..,'to':..}}
             flex_items = [
                 {'attribute': a,
                  'from': str(v[0]) if isinstance(v, list) else str(v.get('from', '0')),
@@ -100,26 +115,34 @@ def assemble_causal_rules(
             if attr not in flex_set:
                 continue
             rows.append({
-                'treatment': attr,
-                'change': f'{frm}→{to}',
+                'treatment':    attr,
+                'change':       f'{frm}→{to}',
                 'precondition': _subpopulation_phrase(stable_items),
-                'n_stable': len(stable_items),
-                'action': _action_phrase(attr, frm, to),
+                'n_stable':     len(stable_items),
+                'action':       _action_phrase(attr, frm, to),
                 '_stable_items': stable_items,
                 'n_candidates': candidates,
             })
 
     if not rows:
-        return pd.DataFrame(columns=['treatment', 'precondition', 'change', 'max_ite', 'n_candidates', 'rule'])
+        return pd.DataFrame(columns=['treatment', 'precondition', 'change', 'subgroup_ite', 'n_candidates', 'rule'])
 
     causal_df = (
         pd.DataFrame(rows)
-        .merge(uplift_summary[['treatment', 'max_ite']], on='treatment', how='inner')
+        .merge(uplift_summary[['treatment']], on='treatment', how='inner')
     )
-    causal_df = causal_df[causal_df['max_ite'] > min_max_ite]
+
+    # compute per-subgroup ITE from the fitted tree's leaf scores
+    causal_df['subgroup_ite'] = [
+        round(_subgroup_mean_ite(cases_df, row['_stable_items'], ite_arrays[row['treatment']]), 4)
+        if row['treatment'] in ite_arrays else 0.0
+        for _, row in causal_df.iterrows()
+    ]
+
+    causal_df = causal_df[causal_df['subgroup_ite'] > min_max_ite]
 
     causal_df = (
-        causal_df.sort_values(['max_ite', 'n_stable'], ascending=[False, True])
+        causal_df.sort_values(['subgroup_ite', 'n_stable'], ascending=[False, True])
         .drop_duplicates(subset=['treatment', 'precondition'])
         .drop(columns=['n_stable', '_stable_items'])
         .reset_index(drop=True)
@@ -129,7 +152,7 @@ def assemble_causal_rules(
         (
             f"Action {i + 1}: {row['action']}. "
             f"Sub-population: {row['precondition']}. "
-            f"[candidates: {row['n_candidates']}, max_ite: {row['max_ite']:+.4f}]"
+            f"[candidates: {row['n_candidates']}, subgroup_ite: {row['subgroup_ite']:+.4f}]"
         )
         for i, row in causal_df.iterrows()
     ]

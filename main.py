@@ -1,5 +1,6 @@
 import os
 
+import pandas as pd
 import config
 from src.preprocessing import prepare_data
 from src.lift_rules import prepare_ar_dataframe, run_lift_rules as run_action_rules, extract_treatments
@@ -30,32 +31,30 @@ def main():
 
     print('4. Uplift modelling')
     condition_cols = [c for c in stable_cols if c.startswith('cond__')]
-    uplift_summary, fitted_models = fit_uplift(cases_df, treatments, condition_cols)
+    uplift_summary, fitted_models, ite_arrays = fit_uplift(cases_df, treatments, condition_cols)
 
     print('5. Assembling causal rules')
-    causal_rules_df = assemble_causal_rules(json_export, uplift_summary, flexible_cols)
+    causal_rules_df = assemble_causal_rules(json_export, uplift_summary, flexible_cols, cases_df, ite_arrays)
     print(f'   Causal rules found: {len(causal_rules_df)}')
     for _, row in causal_rules_df.iterrows():
         print(' •', row['rule'])
 
-    causal_rules_df[['treatment', 'precondition', 'change', 'max_ite', 'n_candidates', 'rule']].to_csv(
+    causal_rules_df[['treatment', 'precondition', 'change', 'subgroup_ite', 'n_candidates', 'rule']].to_csv(
         os.path.join(config.OUTPUT_DIR, 'causal_rules.csv'), index=False
     )
 
-    print('6. Saving tree breakdowns for discovered rules')
-    discovered_treatments = set(causal_rules_df['treatment'].unique())
+    print('6. Saving tree breakdowns for all fitted treatments')
     tree_rows = []
     for treatment, (model, feature_names) in fitted_models.items():
-        if treatment not in discovered_treatments:
-            continue
-        for node in describe_tree(model, feature_names):
+        nodes = describe_tree(model, feature_names)
+        for node in nodes:
             tree_rows.append({'treatment': treatment, **node})
 
     if tree_rows:
-        import pandas as pd
         tree_df = pd.DataFrame(tree_rows)
         tree_df.to_csv(os.path.join(config.OUTPUT_DIR, 'tree_breakdowns.csv'), index=False)
-        print(f'   Saved {len(tree_rows)} nodes for {len(discovered_treatments)} treatment(s)')
+
+        print(f'   Saved {len(tree_rows)} nodes for {len(fitted_models)} treatment(s)')
 
     print(f'\nDone. Outputs saved to {config.OUTPUT_DIR}/')
 
