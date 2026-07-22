@@ -1,7 +1,6 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
 from causalml.inference.tree import UpliftTreeClassifier
 from config import UPLIFT_MAX_DEPTH, UPLIFT_MIN_LEAF_PCT
 
@@ -13,9 +12,9 @@ def _prepare_confounder_matrix(cases_df: pd.DataFrame, condition_cols: list | No
     for col in CONFOUNDER_COLS:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
-    le = LabelEncoder().fit(df['gender'].fillna('U').astype(str).unique())
-    df['gender_enc'] = le.transform(df['gender'].fillna('U').astype(str))
-    cols = ['gender_enc'] + [c for c in CONFOUNDER_COLS if c in df.columns]
+    df['is_female'] = (df['gender'].astype(str) == '8532').astype(int)
+    df['is_male']   = (df['gender'].astype(str) == '8507').astype(int)
+    cols = ['is_female', 'is_male'] + [c for c in CONFOUNDER_COLS if c in df.columns]
     if condition_cols:
         for c in condition_cols:
             if c in df.columns:
@@ -36,7 +35,7 @@ def _leaf_ite_per_patient(model: UpliftTreeClassifier, X: np.ndarray) -> np.ndar
     def _score(node, x):
         if node.col == -1:
             return float(node.upliftScore[0]) if node.upliftScore else 0.0
-        if x[node.col] <= node.cutPoint:
+        if x[node.col] >= node.value:
             return _score(node.trueBranch, x)
         return _score(node.falseBranch, x)
 
@@ -61,16 +60,16 @@ def describe_tree(model: UpliftTreeClassifier, feature_names: list) -> list[dict
             'depth':      depth,
             'node_type':  'leaf' if is_leaf else 'split',
             'split_on':   '—' if is_leaf else feature_names[node.col],
-            'cut_point':  '—' if is_leaf else round(float(node.cutPoint), 2),
+            'cut_point':  '—' if is_leaf else round(float(node.value), 2),
             'path':       ' & '.join(path) if path else '(all patients)',
             'n_samples':  n_samples,
             'ite':        ite,
         })
         if not is_leaf:
             feat = feature_names[node.col]
-            cp   = round(float(node.cutPoint), 2)
-            _walk(node.trueBranch,  depth + 1, path + [f'{feat} ≤ {cp}'])
-            _walk(node.falseBranch, depth + 1, path + [f'{feat} > {cp}'])
+            cp   = round(float(node.value), 2)
+            _walk(node.trueBranch,  depth + 1, path + [f'{feat} ≥ {cp}'])
+            _walk(node.falseBranch, depth + 1, path + [f'{feat} < {cp}'])
 
     _walk(model.fitted_uplift_tree, depth=0, path=[])
     return rows
@@ -85,7 +84,7 @@ def fit_uplift(
     y = (1 - cases_df['readmitted'].astype(int).values)
     min_leaf = max(10, int(len(cases_df) * UPLIFT_MIN_LEAF_PCT))
 
-    feature_names = ['gender_enc'] + [c for c in CONFOUNDER_COLS if c in cases_df.columns]
+    feature_names = ['is_female', 'is_male'] + [c for c in CONFOUNDER_COLS if c in cases_df.columns]
     if condition_cols:
         feature_names += [c for c in condition_cols if c in cases_df.columns]
 
