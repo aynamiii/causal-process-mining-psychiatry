@@ -1,6 +1,7 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+import math
 from causalml.inference.tree import UpliftTreeClassifier
 from config import UPLIFT_MAX_DEPTH, UPLIFT_MIN_LEAF_PCT
 
@@ -25,11 +26,7 @@ def _prepare_confounder_matrix(cases_df: pd.DataFrame, condition_cols: list | No
 
 
 def _leaf_ite_per_patient(model: UpliftTreeClassifier, X: np.ndarray) -> np.ndarray:
-    """Walk the fitted tree for each patient and return that leaf's upliftScore as ITE.
 
-    m.predict() returns raw outcome probabilities in some causalml builds; node.upliftScore
-    is always the honest (treated_rate - control_rate) estimate stored during fitting.
-    """
     tree = model.fitted_uplift_tree
 
     def _score(node, x):
@@ -42,28 +39,69 @@ def _leaf_ite_per_patient(model: UpliftTreeClassifier, X: np.ndarray) -> np.ndar
     return np.array([_score(tree, X[i]) for i in range(len(X))])
 
 
-def describe_tree(model: UpliftTreeClassifier, feature_names: list) -> list[dict]:
-    """Walk a fitted uplift tree and return one dict per node.
+def _wilson_or_normal_diff_ci(p1, n1, p2, n2, z=1.96):
 
-    Each row includes a 'path' showing the chain of conditions from the root,
-    so leaf rows read as e.g. 'age_at_admission ≤ 58.5 & length_of_stay > 3.0'.
-    """
+    if n1 == 0 or n2 == 0:
+        return None, None
+    se = math.sqrt((p1 * (1 - p1)) / n1 + (p2 * (1 - p2)) / n2)
+    diff = p1 - p2
+    return round(diff - z * se, 4), round(diff + z * se, 4)
+
+
+def _minimum_detectable_effect(n1, n2, baseline_p=0.5, alpha=0.05, power=0.80):
+
+    if n1 == 0 or n2 == 0:
+        return None
+    z_alpha = 1.96
+    z_beta = 0.8416
+    var_term = baseline_p * (1 - baseline_p) * (1 / n1 + 1 / n2)
+    return round((z_alpha + z_beta) * math.sqrt(var_term), 4)
+
+
+def describe_tree(model, feature_names: list, baseline_rate: float = None) -> list[dict]:
+
     rows = []
 
     def _walk(node, depth, path: list[str]):
         if node is None:
             return
         is_leaf = node.col == -1
-        n_samples = sum(grp[1] for grp in node.nodeSummary) if node.nodeSummary else None
+
+        n_samples = None
+        control_rate = control_n = treatment_rate = treatment_n = None
+        ite_recomputed = ci_lower = ci_upper = mde = None
+
+        if node.nodeSummary:
+            control_rate, control_n = node.nodeSummary[0]
+            treatment_rate, treatment_n = node.nodeSummary[1]
+            n_samples = control_n + treatment_n
+
+            ite_recomputed = round(treatment_rate - control_rate, 4)
+            ci_lower, ci_upper = _wilson_or_normal_diff_ci(
+                treatment_rate, treatment_n, control_rate, control_n
+            )
+            pooled_baseline = baseline_rate if baseline_rate is not None else control_rate
+            mde = _minimum_detectable_effect(treatment_n, control_n, baseline_p=pooled_baseline)
+
         ite = round(float(node.upliftScore[0]), 4) if node.upliftScore else None
+
         rows.append({
-            'depth':      depth,
-            'node_type':  'leaf' if is_leaf else 'split',
-            'split_on':   '—' if is_leaf else feature_names[node.col],
-            'cut_point':  '—' if is_leaf else round(float(node.value), 2),
-            'path':       ' & '.join(path) if path else '(all patients)',
-            'n_samples':  n_samples,
-            'ite':        ite,
+            'depth':            depth,
+            'node_type':        'leaf' if is_leaf else 'split',
+            'split_on':         '—' if is_leaf else feature_names[node.col],
+            'cut_point':        '—' if is_leaf else round(float(node.value), 2),
+            'path':             ' & '.join(path) if path else '(all patients)',
+            'n_samples':        n_samples,
+            'ite':              ite,
+            'ite_recomputed':   ite_recomputed,   # cross-check against 'ite'
+            'control_n':        control_n,
+            'control_rate':     round(control_rate, 4) if control_rate is not None else None,
+            'treatment_n':      treatment_n,
+            'treatment_rate':   round(treatment_rate, 4) if treatment_rate is not None else None,
+            'ci_95_lower':      ci_lower,
+            'ci_95_upper':      ci_upper,
+            'crosses_zero':     (ci_lower is not None and ci_lower < 0 < ci_upper),
+            'min_detectable_effect_80pct_power': mde,
         })
         if not is_leaf:
             feat = feature_names[node.col]
