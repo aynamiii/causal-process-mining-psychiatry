@@ -104,6 +104,7 @@ def fit_uplift(
             evaluationFunction='KL',
             honesty=True,
             estimation_sample_size=0.5,
+            random_state=42,
         )
         m.fit(X, treatment=np.where(t_vec == 1, 'treatment', 'control'), y=y)
 
