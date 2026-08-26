@@ -7,6 +7,7 @@ from src.lift_rules import prepare_ar_dataframe, run_lift_rules as run_action_ru
 from src.uplift import fit_uplift, describe_tree
 from src.eda import save_eda
 from src.causal_rules import assemble_causal_rules
+from compute_lift import compute_lift_for_subgroup, _parse_precondition
 
 os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
@@ -55,6 +56,28 @@ def main():
         tree_df.to_csv(os.path.join(config.OUTPUT_DIR, 'tree_breakdowns.csv'), index=False)
 
         print(f'   Saved {len(tree_rows)} nodes for {len(fitted_models)} treatment(s)')
+
+    print('7. Computing lift for causal rules')
+    lift_results = []
+    for _, row in causal_rules_df.iterrows():
+        try:
+            stable_dict = _parse_precondition(row['precondition'], stable_cols)
+        except ValueError:
+            continue
+        lift_result = compute_lift_for_subgroup(ar_df, stable_dict, row['treatment'])
+        if lift_result is None:
+            continue
+        lift_results.append({
+            'treatment': row['treatment'],
+            'precondition': row['precondition'],
+            'subgroup_ite_from_causal_rules': row['subgroup_ite'],
+            **lift_result,
+        })
+
+    if lift_results:
+        lift_df = pd.DataFrame(lift_results)
+        lift_df.to_csv(os.path.join(config.OUTPUT_DIR, 'causal_rules_with_lift.csv'), index=False)
+        print(f'   Saved {len(lift_df)} rules with lift to causal_rules_with_lift.csv')
 
     print(f'\nDone. Outputs saved to {config.OUTPUT_DIR}/')
 
